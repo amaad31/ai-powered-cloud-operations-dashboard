@@ -1,14 +1,8 @@
-# Go
 backend-api/backend-api
 *.exe
-
-# Node
 frontend/node_modules/
 frontend/dist/
-
-# Env
 .env
 *.env.local
-
-# OS
 .DS_Store
+infra/kubeconfig-docker.yaml

@@ -44,6 +44,8 @@ func main() {
 	}
 	defer db.Close()
 
+	go startCollector(db)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 

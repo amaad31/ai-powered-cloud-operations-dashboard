@@ -1,3 +1,3 @@
 module github.com/amaad/cloud-ops-dashboard/backend-api
 
-go 1.22
+go 1.26
