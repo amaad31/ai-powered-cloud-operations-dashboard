@@ -37,8 +37,14 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/cloudops?sslmode=disable
       PORT: "8080"
+      KUBECONFIG: /kubeconfig/config
+      CLUSTER_ID: "1"
     ports:
       - "8080:8080"
+    volumes:
+      - ./kubeconfig-docker.yaml:/kubeconfig/config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
