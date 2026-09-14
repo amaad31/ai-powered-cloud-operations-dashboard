@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -113,6 +114,13 @@ func collectOnce(clientset *kubernetes.Clientset, metricsClient *metricsclientse
 			nullableInt64(hasUsage, u.memoryBytes),
 			restartCount,
 		)
+
+		var memBytes int64
+		if hasUsage {
+			memBytes = u.memoryBytes
+		}
+		checkAlerts(db, clusterID, pod.Name, restartCount, memBytes, hasUsage)
+
 		if err != nil {
 			log.Printf("collector: failed to insert metric for pod %s: %v", pod.Name, err)
 			continue
@@ -133,4 +141,49 @@ func nullableInt64(has bool, v int64) interface{} {
 		return nil
 	}
 	return v
+}
+
+// checkAlerts evaluates simple thresholds for a pod and opens/resolves
+// alerts accordingly. One open alert per (pod, alert_type) at a time.
+func checkAlerts(db *sql.DB, clusterID int, podName string, restartCount int32, memoryBytes int64, hasMemory bool) {
+	checkThreshold(db, clusterID, podName, "restart_spike",
+		restartCount > 3,
+		fmt.Sprintf("Pod has restarted %d times", restartCount))
+
+	if hasMemory {
+		const memoryThresholdBytes = 200 * 1024 * 1024 // 200Mi, placeholder value
+		checkThreshold(db, clusterID, podName, "memory_threshold",
+			memoryBytes > memoryThresholdBytes,
+			fmt.Sprintf("Memory usage %.1f MB exceeds threshold", float64(memoryBytes)/1024/1024))
+	}
+}
+
+// checkThreshold opens a new alert if breached and none is currently open,
+// or resolves the existing open alert if the condition is no longer breached.
+func checkThreshold(db *sql.DB, clusterID int, podName, alertType string, breached bool, message string) {
+	var existingID int
+	err := db.QueryRow(
+		`SELECT id FROM alerts WHERE cluster_id = $1 AND pod_name = $2 AND alert_type = $3 AND resolved = false`,
+		clusterID, podName, alertType,
+	).Scan(&existingID)
+	hasOpenAlert := err == nil
+
+	if breached && !hasOpenAlert {
+		_, err := db.Exec(
+			`INSERT INTO alerts (cluster_id, pod_name, alert_type, message) VALUES ($1, $2, $3, $4)`,
+			clusterID, podName, alertType, message,
+		)
+		if err != nil {
+			log.Printf("checkThreshold: failed to insert alert: %v", err)
+			return
+		}
+		log.Printf("ALERT opened: %s for pod %s — %s", alertType, podName, message)
+	} else if !breached && hasOpenAlert {
+		_, err := db.Exec(`UPDATE alerts SET resolved = true WHERE id = $1`, existingID)
+		if err != nil {
+			log.Printf("checkThreshold: failed to resolve alert: %v", err)
+			return
+		}
+		log.Printf("ALERT resolved: %s for pod %s", alertType, podName)
+	}
 }

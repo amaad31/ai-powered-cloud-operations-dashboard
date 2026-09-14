@@ -17,6 +17,44 @@ type healthResponse struct {
 
 var db *sql.DB
 
+type alertRow struct {
+	PodName   string `json:"pod_name"`
+	AlertType string `json:"alert_type"`
+	Severity  string `json:"severity"`
+	Message   string `json:"message"`
+	Resolved  bool   `json:"resolved"`
+	CreatedAt string `json:"created_at"`
+}
+
+func alertsHandler(w http.ResponseWriter, r *http.Request) {
+	rows, err := db.Query(`
+		SELECT pod_name, alert_type, severity, message, resolved, created_at
+		FROM alerts
+		ORDER BY created_at DESC
+		LIMIT 50
+	`)
+	if err != nil {
+		http.Error(w, "failed to query alerts", http.StatusInternalServerError)
+		log.Printf("alerts query failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var results []alertRow
+	for rows.Next() {
+		var a alertRow
+		if err := rows.Scan(&a.PodName, &a.AlertType, &a.Severity, &a.Message, &a.Resolved, &a.CreatedAt); err != nil {
+			http.Error(w, "failed to read alerts", http.StatusInternalServerError)
+			log.Printf("alerts scan failed: %v", err)
+			return
+		}
+		results = append(results, a)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+
 type metricRow struct {
 	PodName      string `json:"pod_name"`
 	Namespace    string `json:"namespace"`
@@ -85,6 +123,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/metrics", metricsHandler)
+	mux.HandleFunc("/alerts", alertsHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
