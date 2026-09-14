@@ -143,23 +143,41 @@ func nullableInt64(has bool, v int64) interface{} {
 	return v
 }
 
+func isRestartSpike(restartCount int32) bool {
+	return restartCount > 3
+}
+
+func isMemoryOverThreshold(memoryBytes int64) bool {
+	const memoryThresholdBytes = 200 * 1024 * 1024 // 200Mi
+	return memoryBytes > memoryThresholdBytes
+}
+
 // checkAlerts evaluates simple thresholds for a pod and opens/resolves
 // alerts accordingly. One open alert per (pod, alert_type) at a time.
 func checkAlerts(db *sql.DB, clusterID int, podName string, restartCount int32, memoryBytes int64, hasMemory bool) {
 	checkThreshold(db, clusterID, podName, "restart_spike",
-		restartCount > 3,
+		isRestartSpike(restartCount),
 		fmt.Sprintf("Pod has restarted %d times", restartCount))
 
 	if hasMemory {
-		const memoryThresholdBytes = 200 * 1024 * 1024 // 200Mi, placeholder value
 		checkThreshold(db, clusterID, podName, "memory_threshold",
-			memoryBytes > memoryThresholdBytes,
+			isMemoryOverThreshold(memoryBytes),
 			fmt.Sprintf("Memory usage %.1f MB exceeds threshold", float64(memoryBytes)/1024/1024))
 	}
 }
 
-// checkThreshold opens a new alert if breached and none is currently open,
-// or resolves the existing open alert if the condition is no longer breached.
+// shouldOpenAlert/shouldResolveAlert are pure decision functions
+// no database access, so they're trivial to unit test.
+func shouldOpenAlert(breached bool, hasOpenAlert bool) bool {
+	return breached && !hasOpenAlert
+}
+
+func shouldResolveAlert(breached bool, hasOpenAlert bool) bool {
+	return !breached && hasOpenAlert
+}
+
+// checkThreshold is the thin, side-effecting wrapper: it looks up current
+// state, asks the pure functions what to do, then applies it.
 func checkThreshold(db *sql.DB, clusterID int, podName, alertType string, breached bool, message string) {
 	var existingID int
 	err := db.QueryRow(
@@ -168,7 +186,7 @@ func checkThreshold(db *sql.DB, clusterID int, podName, alertType string, breach
 	).Scan(&existingID)
 	hasOpenAlert := err == nil
 
-	if breached && !hasOpenAlert {
+	if shouldOpenAlert(breached, hasOpenAlert) {
 		_, err := db.Exec(
 			`INSERT INTO alerts (cluster_id, pod_name, alert_type, message) VALUES ($1, $2, $3, $4)`,
 			clusterID, podName, alertType, message,
@@ -178,7 +196,7 @@ func checkThreshold(db *sql.DB, clusterID int, podName, alertType string, breach
 			return
 		}
 		log.Printf("ALERT opened: %s for pod %s — %s", alertType, podName, message)
-	} else if !breached && hasOpenAlert {
+	} else if shouldResolveAlert(breached, hasOpenAlert) {
 		_, err := db.Exec(`UPDATE alerts SET resolved = true WHERE id = $1`, existingID)
 		if err != nil {
 			log.Printf("checkThreshold: failed to resolve alert: %v", err)
